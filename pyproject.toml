@@ -1,0 +1,14 @@
+[project]
+name = "superpaste"
+version = "0.1.0"
+description = "A small GUI utility for managing cut-and-paste text entries"
+requires-python = ">=3.10"
+dependencies = [
+    "customtkinter",
+    "click",
+    "pyperclip",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

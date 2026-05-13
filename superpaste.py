@@ -456,6 +456,12 @@ def delete(index):
 
 
 @cli.command()
+def config():
+    """Print the location of the config file and exit."""
+    click.echo(DATA_FILE)
+
+
+@cli.command()
 @click.argument("index", type=int)
 def show(index):
     """Show an entry's details (1-based index)."""

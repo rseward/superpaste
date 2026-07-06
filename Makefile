@@ -11,3 +11,6 @@ deps:	venv
 
 run:	deps
 	uv run ./superpaste.py
+
+test:	deps
+	uv run python -m pytest tests/ -v

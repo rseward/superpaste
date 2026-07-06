@@ -3,11 +3,13 @@
 These tests exercise the headless-testable parts of the fix:
   - ``cleanup_toggle_socket()`` — closes the server + removes the socket file
   - signal handlers are registered for SIGINT and SIGTERM
+  - ``_on_close`` calls quit() before destroy() and guards against re-entry
 
 The GUI itself cannot be launched on this host (no display / no tkinter),
 so the visual/mainloop behaviour is verified by code inspection only.
 See the resolution comment on ticket #277 for details.
 """
+import inspect
 import os
 import signal
 import socket
@@ -20,6 +22,28 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 import superpaste  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Helper: extract _on_close method body from source
+# ---------------------------------------------------------------------------
+
+def _extract_on_close_body():
+    """Return the source lines of the _on_close method defined inside
+    launch_gui's SuperPasteApp class."""
+    source = inspect.getsource(superpaste)
+    lines = source.splitlines()
+    on_close_start = None
+    on_close_lines = []
+    for i, line in enumerate(lines):
+        if "def _on_close(self)" in line:
+            on_close_start = i
+        if on_close_start is not None:
+            on_close_lines.append(line)
+            if i > on_close_start and line.strip().startswith("def "):
+                on_close_lines.pop()
+                break
+    return "\n".join(on_close_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -112,3 +136,59 @@ def test_signal_module_imported():
     # The module-level import means signal is in sys.modules via superpaste
     import sys as _sys
     assert "signal" in _sys.modules
+
+
+# ---------------------------------------------------------------------------
+# _on_close ordering and re-entry guard (code inspection)
+# ---------------------------------------------------------------------------
+
+def test_on_close_calls_quit_before_destroy():
+    """_on_close must call quit() BEFORE destroy().
+
+    On Wayland, destroy() alone does not cause mainloop() to return.
+    If quit() is called after destroy(), the Tcl interpreter is already
+    gone and quit() becomes a no-op, so the process lingers indefinitely.
+    """
+    body = _extract_on_close_body()
+
+    quit_pos = body.index("self.quit()")
+    destroy_pos = body.index("self.destroy()")
+    assert quit_pos < destroy_pos, (
+        f"quit() must be called before destroy(), but found the reverse. "
+        f"Source:\n{body}"
+    )
+
+
+def test_on_close_has_no_sys_exit():
+    """_on_close must NOT call sys.exit() in executable code.
+
+    sys.exit() raises SystemExit, which _tkinter catches inside callbacks
+    and converts to a Tcl error — it never actually exits the process
+    when called from a WM_DELETE_WINDOW handler.
+    """
+    body = _extract_on_close_body()
+
+    # Check only executable lines (skip comments/strings)
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        assert "sys.exit" not in stripped, (
+            f"_on_close must not call sys.exit(). Found in: {stripped}\n"
+            f"Full source:\n{body}"
+        )
+
+
+def test_on_close_has_closing_guard():
+    """_on_close must guard against re-entry (e.g. SIGINT arriving while
+    WM_DELETE_WINDOW is already being processed).
+
+    Without the guard, quit()/destroy() could be called twice, causing
+    TclError on the second invocation.
+    """
+    body = _extract_on_close_body()
+
+    assert "self._closing" in body, (
+        f"_on_close must check a self._closing guard to prevent re-entry. "
+        f"Source:\n{body}"
+    )

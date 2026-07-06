@@ -256,6 +256,7 @@ def launch_gui():
             self._auto_hide_id = None
 
             # Drag-to-reorder state
+            self._closing = False
             self._drag_active = False
             self._drag_index = None
             self._palette_rows = []        # row frames, parallel to visible list
@@ -313,19 +314,32 @@ def launch_gui():
                 self._auto_hide_id = None
 
         def _on_close(self):
+            if self._closing:
+                return
+            self._closing = True
+
             # Close the toggle socket and remove the socket file.
             cleanup_toggle_socket(self.toggle_server)
             self.toggle_server = None
-            # destroy() exits mainloop() on X11, but on Wayland it can
-            # leave the process lingering. quit() explicitly breaks the
-            # mainloop, and sys.exit() guarantees the process terminates
-            # even if a stray after()-callback reschedules itself.
-            try:
-                self.destroy()
-            except Exception:
-                pass
+
+            # Cancel any pending auto-hide timer so it doesn't fire
+            # during or after teardown.
+            self._cancel_auto_hide()
+
+            # Order matters: quit() must come BEFORE destroy().  After
+            # destroy() tears down the Tcl interpreter, quit() becomes a
+            # no-op because there is no interpreter to receive the stop
+            # signal.  On Wayland, destroy() alone does NOT cause
+            # mainloop() to return, so the process lingers indefinitely
+            # if quit() was never able to signal it to stop.  Calling
+            # quit() first ensures the main loop exits on all platforms.
+            #
+            # Note: sys.exit(0) was previously used as a "safety net",
+            # but _tkinter catches SystemExit inside callbacks and
+            # converts it to a Tcl error — it never actually exits the
+            # process from within a WM_DELETE_WINDOW handler.
             self.quit()
-            sys.exit(0)
+            self.destroy()
 
         def _build_ui(self):
             # Top bar with Manage button

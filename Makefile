@@ -1,10 +1,13 @@
 .PHONY: venv deps run
 
-venv:
+.venv:
 	uv venv -p /bin/python --allow-existing --system-site-packages
 
-deps:
+venv:	.venv
+	@echo "Using .venv"
+
+deps:	venv
 	uv sync
 
-run:
+run:	deps
 	uv run ./superpaste.py

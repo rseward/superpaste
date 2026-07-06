@@ -9,6 +9,11 @@ dependencies = [
     "pyperclip",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -3,6 +3,8 @@
 
 Single-click any entry to copy it to the clipboard.
 Use the "Manage" button for CRUD operations on entries.
+Drag the grip handle (⠿) on the left of any entry to reorder it; the new
+order is saved automatically and persists across restarts.
 Use --toggle to bring a running instance to the front (bind to a hotkey).
 """
 
@@ -232,6 +234,12 @@ def launch_gui():
             self.toggle_server = None
             self._auto_hide_id = None
 
+            # Drag-to-reorder state
+            self._drag_active = False
+            self._drag_index = None
+            self._palette_rows = []        # row frames, parallel to visible list
+            self._visible_indices = []     # actual entry index for each visible row
+
             self._build_ui()
             self._refresh_palette()
 
@@ -243,6 +251,11 @@ def launch_gui():
 
             # Global keyboard shortcut: Escape to hide window
             self.bind("<Escape>", lambda e: self._hide_window())
+
+            # Drag-to-reorder: capture motion/release globally so events keep
+            # arriving even after palette refresh destroys the original grip.
+            self.bind_all("<B1-Motion>", self._drag_motion)
+            self.bind_all("<ButtonRelease-1>", self._drag_end)
 
         def bring_to_front(self):
             """Bring this window to the front (called by toggle signal)."""
@@ -300,11 +313,21 @@ def launch_gui():
             self.status_label.pack(fill="x", padx=10, pady=(0, 5))
 
         def _refresh_palette(self):
-            """Refresh the main palette of copy buttons."""
+            """Refresh the main palette of copy buttons.
+
+            Each entry is rendered as a row: a grip handle on the left
+            (drag to reorder) and a copy button on the right. Reordering is
+            disabled when a search filter is active (reordering a filtered
+            subset is ambiguous and would silently move items the user can't
+            see).
+            """
             for w in self.palette_frame.winfo_children():
                 w.destroy()
+            self._palette_rows = []
+            self._visible_indices = []
 
             query = self.search_var.get().lower().strip() if hasattr(self, 'search_var') else ""
+            filter_active = bool(query)
 
             for i, entry in enumerate(self.entries):
                 name = entry.get("name", f"Entry {i+1}")
@@ -318,8 +341,36 @@ def launch_gui():
                 if query and query not in name.lower() and query not in content.lower():
                     continue
 
+                row = ctk.CTkFrame(self.palette_frame, fg_color="transparent")
+                row.pack(fill="x", pady=2)
+
+                # Highlight the row currently being dragged.
+                is_dragging = (
+                    self._drag_active
+                    and self._drag_index is not None
+                    and i == self._drag_index
+                )
+                if is_dragging:
+                    row.configure(fg_color=("#cfe3ff", "#1e3a5f"))
+
+                # Grip handle — appears draggable. Disabled during search.
+                grip = ctk.CTkLabel(
+                    row,
+                    text="⠿",
+                    width=22,
+                    anchor="center",
+                    text_color=("gray40", "gray60"),
+                    cursor="hand2" if not filter_active else "arrow",
+                )
+                grip.pack(side="left", fill="y", padx=(0, 4))
+                if filter_active:
+                    grip.configure(text_color=("gray70", "gray70"))
+                else:
+                    grip.bind("<Button-1>", lambda e, idx=i: self._drag_start(idx, e))
+
+                # Copy button — fills the rest of the row
                 btn = ctk.CTkButton(
-                    self.palette_frame,
+                    row,
                     text=f"{name}\n{preview}",
                     command=lambda idx=i: self._copy_entry(idx),
                     anchor="w",
@@ -328,7 +379,84 @@ def launch_gui():
                     text_color=("gray10", "gray90"),
                     hover_color=("#d0d0d0", "#3a3a3a"),
                 )
-                btn.pack(fill="x", pady=2)
+                btn.pack(side="left", fill="both", expand=True)
+
+                self._palette_rows.append(row)
+                self._visible_indices.append(i)
+
+        # ── Drag-to-reorder ───────────────────────────────────────────────
+
+        def _drag_start(self, entry_index, event):
+            """Begin a drag operation on a grip handle.
+
+            ``entry_index`` is the index into ``self.entries`` (not the
+            visible-row index), so we can swap the right entry even when a
+            filter is active. (In practice drag is disabled during filtering,
+            so entry_index == visible row index here.)
+            """
+            self._drag_active = True
+            self._drag_index = entry_index
+            self._drag_y0 = event.y_root
+
+        def _drag_motion(self, event):
+            """Live reorder: swap the dragged entry with its neighbour as the
+            pointer crosses row boundaries, and persist the new order."""
+            if not self._drag_active or self._drag_index is None:
+                return
+
+            y = event.y_root
+
+            # Build a map of row -> (entry_index, y_mid) for visible rows.
+            # Use winfo containing scrollable frame for y-coordinate math.
+            try:
+                self.palette_frame.update_idletasks()
+            except Exception:
+                return
+
+            # Find the target row under the pointer by Y midpoint comparison.
+            target_pos = None
+            for row_pos, row in enumerate(self._palette_rows):
+                try:
+                    y0 = row.winfo_rooty()
+                    y1 = y0 + row.winfo_height()
+                except Exception:
+                    continue
+                if y0 <= y <= y1:
+                    target_pos = row_pos
+                    break
+                if y < y0:
+                    # Pointer above this row — insert before it
+                    target_pos = row_pos
+                    break
+            if target_pos is None and self._palette_rows:
+                target_pos = len(self._palette_rows) - 1
+
+            if target_pos is None:
+                return
+
+            # Translate visible-row position back to entry index
+            target_entry_idx = self._visible_indices[target_pos]
+            current_entry_idx = self._drag_index
+
+            if target_entry_idx == current_entry_idx:
+                return
+
+            # Swap entries in the data list, persist, and refresh.
+            entries = self.entries
+            entries[current_entry_idx], entries[target_entry_idx] = (
+                entries[target_entry_idx],
+                entries[current_entry_idx],
+            )
+            self._drag_index = target_entry_idx
+            save_entries(entries)
+            self._refresh_palette()
+
+        def _drag_end(self, event):
+            """Finalize a drag operation."""
+            if self._drag_active:
+                self._drag_active = False
+                self._drag_index = None
+                self._refresh_palette()
 
         def _copy_entry(self, index):
             """Copy the selected entry's content to the clipboard via pyperclip."""
@@ -459,6 +587,29 @@ def delete(index):
 def config():
     """Print the location of the config file and exit."""
     click.echo(DATA_FILE)
+
+
+@cli.command()
+@click.argument("from_index", type=int)
+@click.argument("to_index", type=int)
+def reorder(from_index, to_index):
+    """Move an entry from position FROM_INDEX to TO_INDEX (both 1-based).
+
+    The entry at FROM_INDEX is removed and inserted at TO_INDEX, shifting
+    the entries in between. The new order is saved to the data file and
+    persists across restarts. This mirrors the drag-to-reorder feature in
+    the GUI and is useful for scripting/automation.
+    """
+    entries = load_entries()
+    n = len(entries)
+    if not (1 <= from_index <= n) or not (1 <= to_index <= n):
+        click.echo(f"Invalid indices. Use 1-{n}.", err=True)
+        sys.exit(1)
+    # Remove then insert (1-based -> 0-based, insert index is to-1 after removal)
+    item = entries.pop(from_index - 1)
+    entries.insert(to_index - 1, item)
+    save_entries(entries)
+    click.echo(f"Moved entry '{item.get('name', 'Unnamed')}' from {from_index} to {to_index}.")
 
 
 @cli.command()

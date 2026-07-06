@@ -2,6 +2,13 @@
 
 ## v0.1.1
 
+- **Fix: process no longer exits cleanly on Wayland**: SuperPaste now
+  installs SIGINT/SIGTERM handlers that schedule proper teardown via the
+  Tk event loop, and `_on_close()` calls `quit()` + `sys.exit(0)` after
+  `destroy()` so the process terminates even on Wayland where
+  `destroy()` alone can leave the mainloop running. Previously, killing
+  the process (e.g. `kill <pid>` or Ctrl+C) left a stale
+  `~/.superpaste.sock`, which broke the next `superpaste toggle` (#277).
 - **Drag-to-reorder entries in the palette**: Grab the grip handle (⠿) on any entry and drag it to a new position. The new order is saved automatically and persists across restarts. Reordering is paused while a search filter is active.
 - **New `reorder` CLI command**: Move entries from the terminal with `superpaste reorder FROM TO` (1-based indices), mirroring the GUI drag behaviour — handy for scripting and automation.
 

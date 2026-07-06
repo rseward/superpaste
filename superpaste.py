@@ -57,6 +57,27 @@ def send_toggle_signal():
     return False
 
 
+def cleanup_toggle_socket(server=None):
+    """Close the toggle socket server and remove the socket file.
+
+    Factored out of the GUI's ``_on_close`` so it can be unit-tested
+    without a display and reused by signal handlers / CLI teardown.
+    Returns True if the socket file was removed (or already gone).
+    """
+    if server is not None:
+        try:
+            server.close()
+        except OSError:
+            pass
+    if os.path.exists(TOGGLE_SOCKET):
+        try:
+            os.unlink(TOGGLE_SOCKET)
+            return True
+        except OSError:
+            return False
+    return True
+
+
 def start_toggle_listener(app):
     """Start a Unix socket listener that brings the app to front on toggle."""
     import customtkinter as ctk
@@ -249,6 +270,20 @@ def launch_gui():
             # Handle window close
             self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+            # Handle OS signals (Ctrl+C, kill, session termination).
+            # Without these handlers, SIGINT/SIGTERM terminate the process
+            # immediately without running _on_close(), leaving a stale
+            # ~/.superpaste.sock that breaks the next `superpaste toggle`.
+            # The `signal` module was imported at module load but previously
+            # unused — these handlers are why it's there.
+            def _signal_shutdown(signum, frame):
+                # Schedule cleanup on the Tk event loop — never call Tk
+                # methods directly from a signal handler (not thread-safe).
+                self.after(0, self._on_close)
+
+            signal.signal(signal.SIGINT, _signal_shutdown)
+            signal.signal(signal.SIGTERM, _signal_shutdown)
+
             # Global keyboard shortcut: Escape to hide window
             self.bind("<Escape>", lambda e: self._hide_window())
 
@@ -278,14 +313,19 @@ def launch_gui():
                 self._auto_hide_id = None
 
         def _on_close(self):
-            if self.toggle_server:
-                self.toggle_server.close()
-            if os.path.exists(TOGGLE_SOCKET):
-                try:
-                    os.unlink(TOGGLE_SOCKET)
-                except OSError:
-                    pass
-            self.destroy()
+            # Close the toggle socket and remove the socket file.
+            cleanup_toggle_socket(self.toggle_server)
+            self.toggle_server = None
+            # destroy() exits mainloop() on X11, but on Wayland it can
+            # leave the process lingering. quit() explicitly breaks the
+            # mainloop, and sys.exit() guarantees the process terminates
+            # even if a stray after()-callback reschedules itself.
+            try:
+                self.destroy()
+            except Exception:
+                pass
+            self.quit()
+            sys.exit(0)
 
         def _build_ui(self):
             # Top bar with Manage button
